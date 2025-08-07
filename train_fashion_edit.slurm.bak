@@ -1,0 +1,56 @@
+#!/bin/bash
+#SBATCH --job-name=instruct-pix2pix-fashion
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=8
+#SBATCH --gres=gpu:h100:8
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=500G
+#SBATCH --time=24:00:00
+#SBATCH --partition=aisc
+#SBATCH --account=aisc
+#SBATCH --qos=aisc
+#SBATCH --output=logs/train_%j.out
+#SBATCH --error=logs/train_%j.err
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=thomas@recreategoods.com
+
+# Create logs directory if it doesn't exist
+mkdir -p logs
+
+# Load necessary modules (adjust based on your cluster)
+# module load cuda/11.8
+# module load anaconda3
+
+# Activate conda environment
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate ip2p-h100
+
+# Set environment variables for distributed training
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export NCCL_DEBUG=INFO
+export PYTHONPATH="${PYTHONPATH}:/sc/home/thomas.chille/instruct-pix2pix"
+export WANDB_API_KEY=937ef632699ed7d9674fb195535f0d90153f8921
+
+# Change to project directory
+cd /sc/home/thomas.chille/instruct-pix2pix
+
+# Download pretrained Stable Diffusion checkpoint if not exists
+if [ ! -f "stable_diffusion/models/ldm/stable-diffusion-v1/v1-5-pruned-emaonly.ckpt" ]; then
+    echo "Downloading pretrained Stable Diffusion checkpoint..."
+    bash scripts/download_pretrained_sd.sh
+fi
+
+# Start training with fashion dataset
+echo "Starting InstructPix2Pix training on fashion-edit-dataset..."
+echo "Job ID: $SLURM_JOB_ID"
+echo "Node: $SLURM_NODELIST"
+echo "GPUs: $CUDA_VISIBLE_DEVICES"
+
+python main.py \
+    --name fashion-edit-experiment \
+    --base configs/train_fashion.yaml \
+    --train \
+    --gpus 0,1,2,3,4,5,6,7 \
+    --logdir logs/fashion-edit-training
+
+echo "Training completed!"
