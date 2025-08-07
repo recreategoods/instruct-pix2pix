@@ -38,7 +38,9 @@ class CFGDenoiser(nn.Module):
 
 def load_model_from_config(config, ckpt, vae_ckpt=None, verbose=False):
     print(f"Loading model from {ckpt}")
-    pl_sd = torch.load(ckpt, map_location="cpu")
+    # pl_sd = torch.load(ckpt, map_location="cpu")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    pl_sd = torch.load(ckpt, map_location=device)
     if "global_step" in pl_sd:
         print(f"Global Step: {pl_sd['global_step']}")
     sd = pl_sd["state_dict"]
@@ -65,7 +67,7 @@ def main():
     parser.add_argument("--resolution", default=512, type=int)
     parser.add_argument("--steps", default=100, type=int)
     parser.add_argument("--config", default="configs/generate.yaml", type=str)
-    parser.add_argument("--ckpt", default="checkpoints/instruct-pix2pix-00-22000.ckpt", type=str)
+    parser.add_argument("--ckpt", default="logs/fashion-training/train_fashion_fashion-8gpu-training-20250727_000556/checkpoints/trainstep_checkpoints/epoch=000066-step=000042000.ckpt", type=str)
     parser.add_argument("--vae-ckpt", default=None, type=str)
     parser.add_argument("--input", required=True, type=str)
     parser.add_argument("--output", required=True, type=str)

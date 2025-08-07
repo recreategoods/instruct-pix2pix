@@ -17,9 +17,16 @@ import torch.distributed as dist
 from pytorch_lightning import seed_everything
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
-from pytorch_lightning.utilities.distributed import rank_zero_only
-from pytorch_lightning.utilities import rank_zero_info
-from pytorch_lightning.plugins import DDPPlugin
+try:
+    from pytorch_lightning.utilities.distributed import rank_zero_only
+    from pytorch_lightning.utilities import rank_zero_info
+except ImportError:
+    from pytorch_lightning.utilities.rank_zero import rank_zero_only
+    from pytorch_lightning.utilities.rank_zero import rank_zero_info
+try:
+    from pytorch_lightning.plugins import DDPPlugin
+except ImportError:
+    from pytorch_lightning.strategies import DDPStrategy as DDPPlugin
 
 sys.path.append("./stable_diffusion")
 
@@ -128,10 +135,14 @@ def get_parser(**parser_kwargs):
 
 
 def nondefault_trainer_args(opt):
-    parser = argparse.ArgumentParser()
-    parser = Trainer.add_argparse_args(parser)
-    args = parser.parse_args([])
-    return sorted(k for k in vars(args) if getattr(opt, k) != getattr(args, k))
+    try:
+        parser = argparse.ArgumentParser()
+        parser = Trainer.add_argparse_args(parser)
+        args = parser.parse_args([])
+        return sorted(k for k in vars(args) if getattr(opt, k) != getattr(args, k))
+    except AttributeError:
+        # add_argparse_args was removed in newer PyTorch Lightning versions
+        return []
 
 
 class WrappedDataset(Dataset):
@@ -356,9 +367,7 @@ class ImageLogger(Callback):
         self.rescale = rescale
         self.batch_freq = batch_frequency
         self.max_images = max_images
-        self.logger_log_images = {
-            pl.loggers.TestTubeLogger: self._testtube,
-        }
+        self.logger_log_images = {}
         self.log_steps = [2 ** n for n in range(6, int(np.log2(self.batch_freq)) + 1)]
         if not increase_log_steps:
             self.log_steps = [self.batch_freq]
@@ -455,11 +464,14 @@ class ImageLogger(Callback):
             return True
         return False
 
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx, dataloader_idx=0):
+        pass
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
         if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
             self.log_img(pl_module, batch, batch_idx, split="train")
 
-    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
         if not self.disabled and pl_module.global_step > 0:
             self.log_img(pl_module, batch, batch_idx, split="val")
         if hasattr(pl_module, 'calibrate_grad_norm'):
@@ -471,19 +483,22 @@ class CUDACallback(Callback):
     # see https://github.com/SeanNaren/minGPT/blob/master/mingpt/callback.py
     def on_train_epoch_start(self, trainer, pl_module):
         # Reset the memory use counter
-        torch.cuda.reset_peak_memory_stats(trainer.root_gpu)
-        torch.cuda.synchronize(trainer.root_gpu)
+        device = pl_module.device if hasattr(pl_module, 'device') else torch.cuda.current_device()
+        torch.cuda.reset_peak_memory_stats(device)
+        torch.cuda.synchronize(device)
         self.start_time = time.time()
 
-    def on_train_epoch_end(self, trainer, pl_module, outputs):
-        torch.cuda.synchronize(trainer.root_gpu)
-        max_memory = torch.cuda.max_memory_allocated(trainer.root_gpu) / 2 ** 20
+    def on_train_epoch_end(self, trainer, pl_module):
+        device = pl_module.device if hasattr(pl_module, 'device') else torch.cuda.current_device()
+        torch.cuda.synchronize(device)
+        max_memory = torch.cuda.max_memory_allocated(device) / 2 ** 20
         epoch_time = time.time() - self.start_time
 
         try:
-            max_memory = trainer.training_type_plugin.reduce(max_memory)
-            epoch_time = trainer.training_type_plugin.reduce(epoch_time)
-
+            if hasattr(trainer, 'strategy'):
+                max_memory = trainer.strategy.reduce(max_memory)
+                epoch_time = trainer.strategy.reduce(epoch_time)
+            
             rank_zero_info(f"Average Epoch time: {epoch_time:.2f} seconds")
             rank_zero_info(f"Average Peak memory {max_memory:.2f}MiB")
         except AttributeError:
@@ -540,7 +555,11 @@ if __name__ == "__main__":
     sys.path.append(os.getcwd())
 
     parser = get_parser()
-    parser = Trainer.add_argparse_args(parser)
+    try:
+        parser = Trainer.add_argparse_args(parser)
+    except AttributeError:
+        # add_argparse_args was removed in newer PyTorch Lightning versions
+        pass
 
     opt, unknown = parser.parse_known_args()
 
@@ -581,16 +600,16 @@ if __name__ == "__main__":
         lightning_config = config.pop("lightning", OmegaConf.create())
         # merge trainer cli with config
         trainer_config = lightning_config.get("trainer", OmegaConf.create())
-        # default to ddp
-        trainer_config["accelerator"] = "ddp"
+        # configure accelerator for older PyTorch Lightning 1.4.x
         for k in nondefault_trainer_args(opt):
             trainer_config[k] = getattr(opt, k)
-        if not "gpus" in trainer_config:
-            del trainer_config["accelerator"]
+        if not "gpus" in trainer_config or not torch.cuda.is_available():
+            # For older PyTorch Lightning, don't set accelerator at all for CPU
             cpu = True
         else:
             gpuinfo = trainer_config["gpus"]
             print(f"Running on GPUs {gpuinfo}")
+            # For older PyTorch Lightning 1.4.x, just keep gpus parameter, no accelerator/devices
             cpu = False
         trainer_opt = argparse.Namespace(**trainer_config)
         lightning_config.trainer = trainer_config
@@ -611,10 +630,10 @@ if __name__ == "__main__":
                     "id": nowname,
                 }
             },
-            "testtube": {
-                "target": "pytorch_lightning.loggers.TestTubeLogger",
+            "tensorboard": {
+                "target": "pytorch_lightning.loggers.TensorBoardLogger",
                 "params": {
-                    "name": "testtube",
+                    "name": "tensorboard",
                     "save_dir": logdir,
                 }
             },
@@ -625,7 +644,15 @@ if __name__ == "__main__":
         else:
             logger_cfg = OmegaConf.create()
         logger_cfg = OmegaConf.merge(default_logger_cfg, logger_cfg)
-        trainer_kwargs["logger"] = instantiate_from_config(logger_cfg)
+        try:
+            trainer_kwargs["logger"] = instantiate_from_config(logger_cfg)
+        except ModuleNotFoundError as e:
+            if 'wandb' in str(e):
+                print(f"Warning: wandb not available or version mismatch: {e}")
+                print("Continuing without wandb logging...")
+                trainer_kwargs["logger"] = False
+            else:
+                raise e
 
         # modelcheckpoint - use TrainResult/EvalResult(checkpoint_on=metric) to
         # specify which metric is used to determine best models
@@ -714,7 +741,10 @@ if __name__ == "__main__":
 
         trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
 
-        trainer = Trainer.from_argparse_args(trainer_opt, plugins=DDPPlugin(find_unused_parameters=False), **trainer_kwargs)
+        # Add trainer configuration parameters from YAML config
+        trainer_kwargs.update(trainer_config)
+
+        trainer = Trainer(strategy=DDPPlugin(find_unused_parameters=False), **trainer_kwargs)
         trainer.logdir = logdir  ###
 
         # data
@@ -795,5 +825,5 @@ if __name__ == "__main__":
             dst = os.path.join(dst, "debug_runs", name)
             os.makedirs(os.path.split(dst)[0], exist_ok=True)
             os.rename(logdir, dst)
-        if trainer.global_rank == 0:
+        if 'trainer' in locals() and trainer.global_rank == 0:
             print(trainer.profiler.summary())

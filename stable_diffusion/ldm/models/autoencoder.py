@@ -2,7 +2,11 @@ import torch
 import pytorch_lightning as pl
 import torch.nn.functional as F
 from contextlib import contextmanager
+import sys
+import os
 
+# Add local taming-transformers to path - append instead of insert to avoid module conflicts
+sys.path.append('/sc/home/thomas.chille/instruct-pix2pix/src/taming-transformers')
 from taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 
 from ldm.modules.diffusionmodules.model import Encoder, Decoder
