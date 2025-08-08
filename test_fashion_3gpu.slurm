@@ -39,7 +39,7 @@ echo "GPUs: 0,1,2"
 echo "Running distributed training with torch.distributed.run"
 
 srun --cpu-bind=none python -m torch.distributed.run --nproc_per_node=3 main.py \
-    --name fashion-3gpu-test \
+    --name fashion-3gpu-test-$(date +%Y%m%d_%H%M%S) \
     --base configs/train_fashion_3gpu.yaml \
     --train \
     --gpus "0,1,2" \

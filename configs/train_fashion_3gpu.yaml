@@ -111,7 +111,7 @@ lightning:
     benchmark: True
     accumulate_grad_batches: 3  # Adjusted for 3 GPUs (effective batch size: 24*3*3=216)
     check_val_every_n_epoch: 2  # More frequent validation
-    precision: 16  # Use mixed precision for faster training on H100
+    precision: 32  # Use FP32 for stability (mixed precision has model compatibility issues)
     # Distributed training settings for 3 GPUs
     strategy: ddp_find_unused_parameters_false  # More stable DDP strategy
     sync_batchnorm: true

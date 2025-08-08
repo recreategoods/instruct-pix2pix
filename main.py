@@ -744,7 +744,7 @@ if __name__ == "__main__":
         # Add trainer configuration parameters from YAML config
         trainer_kwargs.update(trainer_config)
 
-        trainer = Trainer(strategy=DDPPlugin(find_unused_parameters=False), **trainer_kwargs)
+        trainer = Trainer(**trainer_kwargs)
         trainer.logdir = logdir  ###
 
         # data
